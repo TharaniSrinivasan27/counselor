@@ -6,7 +6,8 @@ def counselor_init_routes(app):
     def create_counselor_route():
         data = request.form 
         files = request.files
-        return create_counselor(data,files)
+        current_user = 'thara'
+        return create_counselor(data,files,current_user)
 
     @app.route('/get_counselors', methods=['GET'])
     def get_counselors_route():
@@ -18,8 +19,9 @@ def counselor_init_routes(app):
 
     @app.route('/update_counselor/<counselor_id>', methods=['PUT'])
     def update_counselor_route(counselor_id):
-        data = request.json
-        return update_counselor(counselor_id, data)
+        data = request.form
+        files = request.files  
+        return update_counselor(counselor_id, data,files)
 
     @app.route('/delete_counselor/<counselor_id>', methods=['DELETE'])
     def delete_counselor_route(counselor_id):
