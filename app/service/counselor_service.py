@@ -1,51 +1,81 @@
 import uuid
 import boto3
 from flask import jsonify, request
+import requests
 from botocore.exceptions import ClientError
 from app.models.counselor_models import counselor_table
 from datetime import datetime
+from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
 
 s3 = boto3.client('s3')
 S3_BUCKET = 'counselor-bucket-wgc'
 
-from datetime import datetime
+def generate_presigned_url(filename, content_type):
+    try:
+        counselor_id = str(uuid.uuid4())
+        file_key = f"{counselor_id}/{filename}"
+        response = s3.generate_presigned_url(
+            ClientMethod='put_object',
+            Params={
+                'Bucket': S3_BUCKET, 
+                'Key': file_key,
+                'ContentType': content_type
+            },
+            ExpiresIn=3600
+        )
+        return response, file_key
+    except ClientError as e:
+        print(f"Error generating presigned URL: {e}")
+        return None, None
 
-def create_counselor(data, files,  current_user):
+def allowed_file(filename):
+    ALLOWED_EXTENSIONS = {'.jpeg', '.png', '.jpg', '.pdf'}
+    ext = filename.lower().split('.')[-1]
+    return f".{ext}" in ALLOWED_EXTENSIONS
+
+def create_counselor(data, current_user):
     counselor_id = str(uuid.uuid4())
-    firstName = data.get('firstName')
-    lastName = data.get('lastName')
-    gender = data.get('gender')
-    mailid = data.get('mailid')
-    contact_number = data.get('contact_number')
-    alternate_contact_number = data.get('alternate_contact_number')
-    history = data.get('history')
-    experience = data.get('experience')
-    date_of_birth = data.get('date_of_birth')
-    address = data.get('address')
-    country = data.get('country')
-    state = data.get('state')
-    district = data.get('district')
-    city = data.get('city')
-    pincode = data.get('pincode')
-    price = data.get('price')
-    specialization = data.get('specialization')
-    qualification = data.get('qualification')
-    language_spoken = data.get('language_spoken')
-    achievements = data.get('achievements')
-    date_of_joining = data.get('date_of_joining')
-    rating = data.get('rating', 0)  # Default to 0 if not provided
-    isActive = data.get('isActive', True)  # Default to True if not provided
-    linkedinURL = data.get('linkedinURL', '')
+    firstName = data['firstName']
+    lastName = data['lastName']
+    gender = data['gender']
+    mailid = data['mailid']
+    contact_number = data['contact_number']
+    alternate_contact_number = data['alternate_contact_number']
+    history = data['history']
+    experience = data['experience']
+    date_of_birth = data['date_of_birth']
+    address = data['address']
+    country = data['country']
+    state = data['state']
+    district = data['district']
+    city = data['city']
+    pincode = data['pincode']
+    price = data['price']
+    specialization = data['specialization']
+    qualification = data['qualification']
+    language_spoken = data['language_spoken']
+    achievements = data['achievements']
+    date_of_joining = data['date_of_joining']
+    rating = Decimal(data['rating']) if 'rating' in data else Decimal('0')
+    isActive = data['isActive'] if 'isActive' in data else True
+    linkedinURL = data['linkedinURL'] if 'linkedinURL' in data else ''
+    availability_status = data['availability_status']
+    photo_name = data['PhotoURL'] if 'PhotoURL' in data else ''  
+    created_at = datetime.utcnow().isoformat()
+    updated_at = created_at
 
-    # Check if all required fields are present and not empty
     required_fields = [
         firstName, lastName, gender, mailid, contact_number, alternate_contact_number,
         experience, date_of_birth, address, country, state, district, city, pincode,
-        price, specialization, qualification, language_spoken, achievements, date_of_joining
+        price, specialization, qualification, language_spoken, achievements,
+        date_of_joining, availability_status
     ]
 
     if any(field is None or field == '' for field in required_fields):
         return {'error': 'All fields are required.'}, 400
+    presigned_url, file_key = generate_presigned_url(photo_name, 'image/jpeg')  
+    if not presigned_url:
+        return {'error': 'Error generating presigned URL.'}, 500
 
     counselor_details = {
         'counselorId': counselor_id,
@@ -73,36 +103,28 @@ def create_counselor(data, files,  current_user):
         'rating': rating,
         'isActive': isActive,
         'linkedinURL': linkedinURL,
-        'createdBy': current_user,  
-        'createdAt': datetime.utcnow().isoformat(),
-        'updatedAt':  current_user,
-        'updatedBy': datetime.utcnow().isoformat(),
+        'availability_status': availability_status,
+        'PhotoURL': file_key,  
+        'created_by': current_user,
+        'created_at': created_at,
+        'updated_by': current_user,
+        'updated_at': updated_at,
         'deletedAt': None,
         'deletedBy': None
     }
 
     try:
-        # Check if a photo file was uploaded and process it
-        if 'PhotoURL' in files:
-            photo_file = files['PhotoURL']
-            if photo_file and (photo_file.filename.endswith('.JPEG') or photo_file.filename.endswith('.pdf') or photo_file.filename.endswith('.jpg')):
-                photo_filename = f"{counselor_id}/{photo_file.filename}"
-                s3.upload_fileobj(photo_file, S3_BUCKET, photo_filename)
-                photo_url = f"https://{S3_BUCKET}.s3.amazonaws.com/{photo_filename}"
-                counselor_details['PhotoURL'] = photo_url
-            else:
-                return {'error': 'Invalid file type. Only JPEG or PDF files are allowed.'}, 400
-
-        # Insert the counselor details into the DynamoDB table
-        response = counselor_table.put_item(Item=counselor_details)
+        counselor_table.put_item(Item=counselor_details)
+        print(f"Presigned URL: {presigned_url}")
 
         return {
             'message': 'Counselor created successfully.',
             'counselorId': counselor_id,
-            'counselor': counselor_details
+            'counselor': counselor_details,
+            'presigned_url': presigned_url  
         }, 201
     except ClientError as e:
-        print(f"Error inserting item: {e}")
+        print(f"Error inserting item into DynamoDB: {e}")
         return {'error': 'Error creating counselor.'}, 500
     except Exception as e:
         print(f"Unexpected error: {e}")
@@ -131,76 +153,139 @@ def get_counselor_by_id(counselor_id):
         print(f"Error retrieving counselor: {e}")
         return {'error': 'Error retrieving counselor.'}, 500
 
-
-def update_counselor(counselor_id, data, files):
-    # Fetch current counselor details from DynamoDB
+def update_counselor(counselor_id, data, current_user):
     try:
-        current_counselor = counselor_table.get_item(Key={'counselorId': counselor_id}).get('Item')
-        if not current_counselor:
-            return {'error': 'Counselor not found.'}, 404
-    except ClientError as e:
-        print(f"Error fetching counselor: {e}")
-        return {'error': 'Error fetching counselor details.'}, 500
+        print(f"Updating counselor with ID: {counselor_id}")
+        response = counselor_table.get_item(Key={'counselorId': counselor_id})
+        print(f"DynamoDB response: {response}")
+        
+        if 'Item' not in response:
+            return {'error': 'Counselor not found'}, 404
+        
+        counselor = response['Item']
+        update_expression = "SET "
+        expression_attribute_values = {}
+        
+        updatable_fields = [
+            'firstName', 'lastName', 'gender', 'mailid', 'contact_number',
+            'alternate_contact_number', 'history', 'experience', 'date_of_birth',
+            'address', 'country', 'state', 'district', 'city', 'pincode',
+            'specialization', 'qualification', 'language_spoken',
+            'achievements', 'date_of_joining', 'availability_status', 'isActive',
+            'linkedinURL'
+        ]
+        
+        for field in updatable_fields:
+            if field in data and data[field] != counselor.get(field):
+                update_expression += f"{field} = :{field}, "
+                expression_attribute_values[f":{field}"] = data[field]
+        if 'price' in data:
+            try:
+                price_value = Decimal(data['price']).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+                if price_value != counselor.get('price'):
+                    update_expression += "price = :price, "
+                    expression_attribute_values[":price"] = price_value
+            except (InvalidOperation, ValueError) as e:
+                print(f"Invalid price value: {e}")
+                return {'error': 'Invalid price value'}, 400
+        if 'rating' in data:
+            try:
+                rating_value = Decimal(data['rating']).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+                if rating_value != counselor.get('rating'):
+                    update_expression += "rating = :rating, "
+                    expression_attribute_values[":rating"] = rating_value
+            except (InvalidOperation, ValueError) as e:
+                print(f"Invalid rating value: {e}")
+                return {'error': 'Invalid rating value'}, 400
+            
+        new_photo_filename = data.get('PhotoURL')
+        if new_photo_filename and allowed_file(new_photo_filename):
+            old_photo_url = counselor.get('PhotoURL')
+            if old_photo_url:
+                try:
+                    s3.delete_object(Bucket=S3_BUCKET, Key=old_photo_url)
+                    print(f"Old photo {old_photo_url} deleted successfully from S3.")
+                except ClientError as e:
+                    print(f"Error deleting old photo from S3: {e}")
+                    return {'error': 'Failed to delete old photo'}, 500
+            
+            content_type = 'image/jpeg' if new_photo_filename.lower().endswith('.jpeg') else 'image/png'
+            presigned_url, new_file_key = generate_presigned_url(new_photo_filename, content_type)
+            
+            if not presigned_url:
+                return {'error': 'Failed to generate pre-signed URL for the new photo'}, 500
+            
+            update_expression += "PhotoURL = :PhotoURL, "
+            expression_attribute_values[':PhotoURL'] = new_file_key
+        update_expression = update_expression.rstrip(', ')
+        updated_at = datetime.utcnow().isoformat()
+        update_expression += ", updated_by = :updated_by, updated_at = :updated_at"
+        expression_attribute_values[":updated_by"] = current_user
+        expression_attribute_values[":updated_at"] = updated_at
+        
+        if not expression_attribute_values:
+            return {'error': 'No valid fields provided for update'}, 400
+        
+        print(f"Update Expression: {update_expression}")
+        print(f"Expression Attribute Values: {expression_attribute_values}")
 
-    update_expression = "SET "
-    expression_attribute_values = {}
-    expression_attribute_names = {}
-
-    # Process FormData fields and compare with current values
-    for key, value in data.items():
-        if value and current_counselor.get(key) != value:  # Update only if the value has changed
-            expression_attribute_names[f"#{key}"] = key
-            update_expression += f"#{key} = :{key}, "
-            expression_attribute_values[f":{key}"] = value
-
-    # Handle file upload
-    if 'PhotoURL' in files:
-        photo_file = files['PhotoURL']
-        if photo_file and (photo_file.filename.endswith('.JPEG') or photo_file.filename.endswith('.pdf')):
-            photo_filename = f"{counselor_id}/{photo_file.filename}"
-            s3.upload_fileobj(photo_file, S3_BUCKET, photo_filename)
-            photo_url = f"https://{S3_BUCKET}.s3.amazonaws.com/{photo_filename}"
-            if current_counselor.get("PhotoURL") != photo_url:  
-                update_expression += "PhotoURL = :photo_url, "
-                expression_attribute_values[":photo_url"] = photo_url
-
-    # Remove trailing comma and space
-    update_expression = update_expression.rstrip(', ')
-
-    # Ensure there's at least one field to update
-    if not expression_attribute_values:
-        return {'message': 'No fields to update; all values are unchanged.'}, 200
-
-    try:
-        # Conditionally include ExpressionAttributeNames if it is not empty
-        update_item_params = {
-            'Key': {'counselorId': counselor_id},
-            'UpdateExpression': update_expression,
-            'ExpressionAttributeValues': expression_attribute_values,
-            'ReturnValues': "ALL_NEW"
+        counselor_table.update_item(
+            Key={'counselorId': counselor_id},
+            UpdateExpression=update_expression,
+            ExpressionAttributeValues=expression_attribute_values
+        )
+        
+        response_data = {
+            'message': 'Counselor updated successfully',
+            'counselorId': counselor_id
         }
+        
+        if new_photo_filename:
+            response_data['uploadData'] = {
+                'presignedUrl': presigned_url,
+                'photoUrl': new_file_key
+            }
 
-        if expression_attribute_names:  # Only add if there are names to map
-            update_item_params['ExpressionAttributeNames'] = expression_attribute_names
-
-        response = counselor_table.update_item(**update_item_params)
-        updated_counselor = response.get('Attributes')
-        return {
-            'message': 'Counselor updated successfully.',
-            'counselorId': counselor_id,
-            'counselor': updated_counselor
-        }, 200
+        return response_data, 200
+    
     except ClientError as e:
         print(f"Error updating counselor: {e}")
-        return {'error': 'Error updating counselor.'}, 500
-    
-def delete_counselor(counselor_id):
+        return {'error': 'Error updating counselor'}, 500
+    except Exception as e:
+        print(f"Unexpected error: {e}")
+        return {'error': 'Unexpected error occurred'}, 500
+          
+def delete_counselor(counselor_id, current_user):
     try:
-        response = counselor_table.delete_item(
+        counselor = counselor_table.get_item(Key={'counselorId': counselor_id}).get('Item')
+        if not counselor:
+            return {'error': f'Counselor with ID {counselor_id} not found.'}, 404
+        photo_url = counselor.get('PhotoURL')
+        response = counselor_table.update_item(
             Key={'counselorId': counselor_id},
-            ConditionExpression="attribute_exists(counselorId)"
+            UpdateExpression="SET deleted_by = :deleted_by, deletedAt = :deleted_at, isActive = :isActive",
+            ExpressionAttributeValues={
+                ':deleted_by': current_user,
+                ':deleted_at': datetime.utcnow().isoformat(),
+                ':isActive': False
+            },
+            ConditionExpression="attribute_exists(counselorId)",
+            ReturnValues="UPDATED_NEW"
         )
-        return {'message': f'Counselor with ID {counselor_id} deleted successfully.'}, 200
+        if photo_url:
+            try:
+                photo_key = photo_url.split(f"https://{S3_BUCKET}.s3.amazonaws.com/")[-1]
+                s3.delete_object(Bucket=S3_BUCKET, Key=photo_key)
+                print(f"File {photo_key} deleted successfully from S3.")
+            except ClientError as e:
+                print(f"Error deleting file from S3: {e}")
+                return {'error': f'Error deleting photo from S3 for counselor ID {counselor_id}.'}, 500
+
+        return {
+            'message': f'Counselor with ID {counselor_id} deleted successfully.',
+            'updatedFields': response.get('Attributes')
+        }, 200
+
     except ClientError as e:
         print(f"Error deleting counselor: {e}")
         return {'error': f'Error deleting counselor with ID {counselor_id} or counselor not found.'}, 500

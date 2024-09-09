@@ -2,3 +2,4 @@ Flask
 serverless-wsgi
 boto3
 flask_cors
+requests

@@ -42,8 +42,10 @@ package:
   exclude:
     - node_modules/**
     - venv/**
-    - .venv/**
+    - .venv/** 
     - tests/**
 
 requirements:
   dockerizePip: true
+
+
